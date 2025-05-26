@@ -72,6 +72,13 @@ class QueryPayload(BaseModel):
     token: str
     question: str
 
+class FixGrammarPayload(BaseModel):
+    text: str
+
+class TranslatePayload(BaseModel):
+    text: str
+    targetLang: str
+
 # ========== Ollama LLM Declaration ==========
 logger.info(f"Initializing LLM with model: {settings.model_name}")
 llm = ChatOllama(
@@ -83,8 +90,8 @@ llm = ChatOllama(
 def summarize_html(html: str) -> str:
     logger.info("Summarizing HTML content...")
     messages = [
-        {"role": "system", "content": """Summarize the following HTML content. You ahve to only focus on the text parts of it.
-                                         Do not include any HTML tags or attributes in the summary. The summary should be concise and informative."""},
+        {"role": "system", "content": """Summarize the following text content extracted from an HTML page.
+                                         The summary should be concise and informative."""},
         {"role": "user", "content": html}
     ]
     try:
@@ -98,8 +105,8 @@ def summarize_html(html: str) -> str:
 def ask_question(html: str, question: str) -> str:
     logger.info(f"Answering question: {question[:50]}...")  # Truncate long questions
     messages = [
-        {"role": "system", "content": "You are answering questions based on the following HTML content."},
-        {"role": "user", "content": f"HTML:\n{html}\n\nQuestion:\n{question}"}
+        {"role": "system", "content": "You are answering questions based on the following text."},
+        {"role": "user", "content": f"Text:\n{html}\n\nQuestion:\n{question}"}
     ]
     try:
         response = llm.invoke(messages)
@@ -220,7 +227,34 @@ async def ask_query(payload: QueryPayload, db: AsyncSession = Depends(get_db)):
     answer = ask_question(html_data.html, payload.question)
     return {"answer": answer}
 
-@app.post("/dummy_data")
-async def get_dummy_data():
-    logger.info("Returning dummy data.")
-    return {"message": "This is dummy data for testing purposes."}
+@app.post("/correct-grammar/")
+async def correct_grammar(payload: FixGrammarPayload):
+    logger.info("Correcting grammar for provided text.")
+    messages = [
+        {"role": "system", "content": """You are a grammar correction assistant. 
+                                         Correct the grammar and fix the typo required in the provided text."""},
+        {"role": "user", "content": payload.text}
+    ]
+    try:
+        response = llm.invoke(messages)
+        logger.info("Grammar correction completed.")
+        return {"corrected_text": response.content}
+    except Exception as e:
+        logger.error(f"Error correcting grammar: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/translate/")
+async def translate_text(payload: TranslatePayload):
+    logger.info(f"Translating text to {payload.targetLang}.")
+    messages = [
+        {"role": "system", "content": f"""You are a translation assistant. 
+                                          Translate the following text to {payload.targetLang}."""},
+        {"role": "user", "content": payload.text}
+    ]
+    try:
+        response = llm.invoke(messages)
+        logger.info("Translation completed.")
+        return {"translated_text": response.content}
+    except Exception as e:
+        logger.error(f"Error translating text: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
