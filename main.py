@@ -6,12 +6,13 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, String, Text, DateTime, select, delete
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone 
 from uuid import uuid4
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from contextlib import asynccontextmanager
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from langchain_ollama import ChatOllama
+from bs4 import BeautifulSoup
 
 # ========== Configure Logging ==========
 logger = logging.getLogger("server_app")
@@ -108,7 +109,32 @@ def ask_question(html: str, question: str) -> str:
         logger.error(f"Error answering question: {e}")
         raise
 
-# ========== Cleanup Task ==========
+# ========== HTML Cleanup to text ==========
+def extract_text_from_html_string(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # Remove non-visible tags
+    for tag in soup(['script', 'style', 'head', 'title', 'meta', '[document]']):
+        tag.decompose()
+
+    # Helper function to check inline visibility
+    def is_hidden(element):
+        parent = element.parent
+        if not parent:
+            return False
+        style = parent.attrs.get('style', '').replace(' ', '').lower()
+        return 'display:none' in style or 'visibility:hidden' in style
+
+    # Collect visible text
+    visible_texts = [
+        text.strip()
+        for text in soup.find_all(string=True)
+        if text.strip() and not is_hidden(text)
+    ]
+
+    return ' '.join(visible_texts)
+
+# ========== DB Cleanup Task ==========
 expiration_time = timedelta(hours=1)
 scheduler = AsyncIOScheduler()
 
@@ -116,12 +142,14 @@ async def cleanup_html():
     logger.info("Running scheduled cleanup task.")
     try:
         async with AsyncSessionLocal() as db:
-            cutoff = datetime.utcnow() - expiration_time
+            cutoff = datetime.now(timezone.utc) - expiration_time
+            logger.info(f"Deleting records older than {cutoff}.")
             result = await db.execute(delete(HTMLData).where(HTMLData.timestamp < cutoff))
-            deleted_rows = result.rowcount
+            deleted_rows = result.rowcount or 0
             await db.commit()
             logger.info(f"Cleaned up {deleted_rows} expired records.")
     except Exception as e:
+        await db.rollback()
         logger.error(f"Error during cleanup: {e}")
 
 scheduler.add_job(cleanup_html, "interval", minutes=10)
@@ -156,7 +184,11 @@ async def upload_html(payload: HTMLPayload, db: AsyncSession = Depends(get_db)):
     logger.info("Received request to upload HTML.")
     try:
         token = str(uuid4())
-        db.add(HTMLData(token=token, html=payload.html))
+        html_text = extract_text_from_html_string(payload.html)
+        if not html_text:
+            logger.warning("No visible text found in HTML.")
+            raise HTTPException(status_code=400, detail="No visible text found in HTML")
+        db.add(HTMLData(token=token, html=html_text))
         await db.commit()
         logger.info(f"HTML stored with token: {token}")
         return {"message": "HTML stored", "token": token}
@@ -187,3 +219,8 @@ async def ask_query(payload: QueryPayload, db: AsyncSession = Depends(get_db)):
 
     answer = ask_question(html_data.html, payload.question)
     return {"answer": answer}
+
+@app.post("/dummy_data")
+async def get_dummy_data():
+    logger.info("Returning dummy data.")
+    return {"message": "This is dummy data for testing purposes."}
