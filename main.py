@@ -79,6 +79,10 @@ class TranslatePayload(BaseModel):
     text: str
     targetLang: str
 
+class InteractPayload(BaseModel):
+    question: str
+    selectedContent: str
+
 # ========== Ollama LLM Declaration ==========
 logger.info(f"Initializing LLM with model: {settings.model_name}")
 llm = ChatOllama(
@@ -257,4 +261,21 @@ async def translate_text(payload: TranslatePayload):
         return {"translated_text": response.content}
     except Exception as e:
         logger.error(f"Error translating text: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/chat_about_content/")
+async def chat_about_content(payload: InteractPayload):
+    logger.info("Genie started working.")
+    messages = [
+        {"role": "system", "content": """Given the following content, answer the user's question. 
+                                         If it is a task complete the task and only return the results."""},
+        {"role": "system", "content": f"Content:\n{payload.selectedContent}\n"},
+        {"role": "user", "content": f"Question or Task:\n{payload.question}\n"}
+    ]
+    try:
+        response = llm.invoke(messages)
+        logger.info("Genie work completed.")
+        return {"answer": response.content}
+    except Exception as e:
+        logger.error(f"Error on Genie task completion: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
