@@ -1,3 +1,4 @@
+import os
 import logging
 from logging.handlers import RotatingFileHandler
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,9 @@ from contextlib import asynccontextmanager
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from langchain_ollama import ChatOllama
 from bs4 import BeautifulSoup
+import tiktoken
+
+os.environ["TIKTOKEN_CACHE_DIR"] = "./tiktoken_cache"
 
 # ========== Configure Logging ==========
 logger = logging.getLogger("server_app")
@@ -36,6 +40,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8')
     model_name: str
     ollama_url: str
+    tiktoken_encoding : str
+    model_token_limit : int
 
 settings = Settings()
 
@@ -145,6 +151,15 @@ def extract_text_from_html_string(html_content):
 
     return ' '.join(visible_texts)
 
+# ========== Token Limiter ==========
+def truncate_text_by_tokens(text, max_tokens=500, encoding_name="cl100k_base"):
+    encoding = tiktoken.get_encoding(encoding_name)
+    tokens = encoding.encode(text)
+    if len(tokens) <= max_tokens:
+        return text
+    truncated_tokens = tokens[:max_tokens]
+    return encoding.decode(truncated_tokens)
+
 # ========== DB Cleanup Task ==========
 expiration_time = timedelta(hours=1)
 scheduler = AsyncIOScheduler()
@@ -196,10 +211,11 @@ async def upload_html(payload: HTMLPayload, db: AsyncSession = Depends(get_db)):
     try:
         token = str(uuid4())
         html_text = extract_text_from_html_string(payload.html)
-        if not html_text:
+        processed_html_text = truncate_text_by_tokens(html_text, settings.model_token_limit, settings.tiktoken_encoding)
+        if not processed_html_text:
             logger.warning("No visible text found in HTML.")
             raise HTTPException(status_code=400, detail="No visible text found in HTML")
-        db.add(HTMLData(token=token, html=html_text))
+        db.add(HTMLData(token=token, html=processed_html_text))
         await db.commit()
         logger.info(f"HTML stored with token: {token}")
         return {"message": "HTML stored", "token": token}
